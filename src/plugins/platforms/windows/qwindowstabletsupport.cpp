@@ -615,10 +615,14 @@ bool QWindowsTabletSupport::translateTabletPacketEvent()
             // Pointer type changed, find or clone a new device for this physical cursor.
             const qint64 systemId = m_currentDevice->systemId();
             const QInputDevice::DeviceType type = m_currentDevice->type();
-            m_currentDevice = findDevice(systemId, type, packetPointerType);
-            if (m_currentDevice.isNull())
-                m_currentDevice = clonePhysicalDevice(systemId, type, packetPointerType);
-            Q_ASSERT(!m_currentDevice.isNull());
+            DevicePtr newDevice = findDevice(systemId, type, packetPointerType);
+            if (newDevice.isNull())
+                newDevice = clonePhysicalDevice(systemId, type, packetPointerType);
+            if (newDevice.isNull()) {
+                qCWarning(lcQpaTablet) << "Unable to resolve WinTab pointing device";
+                return false;
+            }
+            m_currentDevice = newDevice;
             enterProximity(packet.pkTime);
         }
 
