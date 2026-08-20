@@ -672,13 +672,11 @@ bool QWindowsPointerHandler::translatePenEvent(QWindow *window, HWND hwnd, QtWin
         break;
     }
     case WM_POINTERLEAVE:
-        // WM_POINTERLEAVE tracks the pen independently of the system mouse position.
-        QWindowSystemInterface::handleLeaveEvent(window);
-        if (m_windowUnderPointer == window)
+        if (m_windowUnderPointer && m_windowUnderPointer == m_currentWindow) {
+            QWindowSystemInterface::handleLeaveEvent(m_windowUnderPointer);
             m_windowUnderPointer = nullptr;
-        if (m_currentWindow == window)
             m_currentWindow = nullptr;
-        m_needsEnterOnPointerUpdate = false;
+        }
         QWindowSystemInterface::handleTabletEnterLeaveProximityEvent(window, msg.time, device.data(), false);
         break;
     case WM_POINTERDOWN:
@@ -693,6 +691,15 @@ bool QWindowsPointerHandler::translatePenEvent(QWindow *window, HWND hwnd, QtWin
         if (m_needsEnterOnPointerUpdate) {
             m_needsEnterOnPointerUpdate = false;
             if (window != m_currentWindow) {
+                // TrackMouseEvent follows the physical mouse cursor, not the pen.
+                POINT mousePos;
+                if (GetCursorPos(&mousePos) && WindowFromPoint(mousePos) == hwnd
+                    && ScreenToClient(hwnd, &mousePos)) {
+                    RECT clientRect;
+                    if (GetClientRect(hwnd, &clientRect) && PtInRect(&clientRect, mousePos))
+                        trackLeave(hwnd);
+                }
+
                 QWindowSystemInterface::handleEnterEvent(window, localPos, globalPos);
                 m_currentWindow = window;
                 if (QWindowsWindow *wumPlatformWindow = QWindowsWindow::windowsWindowOf(target))
@@ -796,19 +803,6 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
     if (et == QtWindows::MouseWheelEvent)
         return translateMouseWheelEvent(window, currentWindowUnderPointer, msg, globalPos, keyModifiers);
 
-    // Handle leave before filtering mouse messages synthesized from pen or touch input.
-    // WM_MOUSELEAVE can carry the input device signature of the event that triggered it.
-    if (msg.message == WM_MOUSELEAVE) {
-        if (window == m_currentWindow) {
-            QWindow *leaveTarget = m_windowUnderPointer ? m_windowUnderPointer : m_currentWindow;
-            qCDebug(lcQpaEvents) << "Leaving window " << leaveTarget;
-            QWindowSystemInterface::handleLeaveEvent(leaveTarget);
-            m_windowUnderPointer = nullptr;
-            m_currentWindow = nullptr;
-        }
-        return true;
-    }
-
     // Windows sends a mouse move with no buttons pressed to signal "Enter"
     // when a window is shown over the cursor. Discard the event and only use
     // it for generating QEvent::Enter to be consistent with other platforms -
@@ -875,6 +869,17 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
         QWindowSystemInterface::handleMouseEvent(window, msg.time, device, localPos, globalPos, mouseButtons,
                                                            mouseEvent.button, mouseEvent.type, keyModifiers, source);
         return false; // Allow further event processing
+    }
+
+    if (msg.message == WM_MOUSELEAVE) {
+        if (window == m_currentWindow) {
+            QWindow *leaveTarget = m_windowUnderPointer ? m_windowUnderPointer : m_currentWindow;
+            qCDebug(lcQpaEvents) << "Leaving window " << leaveTarget;
+            QWindowSystemInterface::handleLeaveEvent(leaveTarget);
+            m_windowUnderPointer = nullptr;
+            m_currentWindow = nullptr;
+        }
+        return true;
     }
 
     handleWindowActivation(window, mouseEvent.type);
