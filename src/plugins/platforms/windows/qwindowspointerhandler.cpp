@@ -380,6 +380,8 @@ void QWindowsPointerHandler::handleEnterLeave(QWindow *window,
 
             qCDebug(lcQpaEvents) << "Leaving window " << m_windowUnderPointer;
             QWindowSystemInterface::handleLeaveEvent(m_windowUnderPointer);
+            if (m_currentPenWindow == m_windowUnderPointer)
+                m_currentPenWindow = nullptr;
 
             if (hasCapture && currentWindowUnderPointer != window) {
                 // Clear tracking if capturing and current window is not the capturing window
@@ -672,11 +674,18 @@ bool QWindowsPointerHandler::translatePenEvent(QWindow *window, HWND hwnd, QtWin
         break;
     }
     case WM_POINTERLEAVE:
-        if (m_windowUnderPointer && m_windowUnderPointer == m_currentWindow) {
-            QWindowSystemInterface::handleLeaveEvent(m_windowUnderPointer);
-            m_windowUnderPointer = nullptr;
-            m_currentWindow = nullptr;
+        // WM_POINTERLEAVE is the "pen event" we are interested in. It does not depend on
+        // subscription via "trackMouseEvent" like WM_MOUSELEAVE
+        if (m_currentPenWindow == window) {
+            QWindowSystemInterface::handleLeaveEvent(window);
+            m_currentPenWindow = nullptr;
         }
+
+        // WM_POINTERENTER set m_windowUnderPointer but no enter was delivered. Undo that unless
+        // the window is under the mouse as well (then it's legitimate)
+        if (m_windowUnderPointer == window && m_currentWindow != window)
+            m_windowUnderPointer = nullptr;
+
         QWindowSystemInterface::handleTabletEnterLeaveProximityEvent(window, msg.time, device.data(), false);
         break;
     case WM_POINTERDOWN:
@@ -690,12 +699,14 @@ bool QWindowsPointerHandler::translatePenEvent(QWindow *window, HWND hwnd, QtWin
 
         if (m_needsEnterOnPointerUpdate) {
             m_needsEnterOnPointerUpdate = false;
-            if (window != m_currentWindow) {
-                // make sure we subscribe to leave events for this window
-                trackLeave(hwnd);
+            if (window != m_currentPenWindow) {
+                // Windows may deliver WM_POINTERENTER for the new window before
+                // WM_POINTERLEAVE for the previous one; pair the leave ourselves.
+                if (m_currentPenWindow)
+                    QWindowSystemInterface::handleLeaveEvent(m_currentPenWindow);
 
                 QWindowSystemInterface::handleEnterEvent(window, localPos, globalPos);
-                m_currentWindow = window;
+                m_currentPenWindow = window;
                 if (QWindowsWindow *wumPlatformWindow = QWindowsWindow::windowsWindowOf(target))
                     wumPlatformWindow->applyCursor();
             }
@@ -872,6 +883,8 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
             QWindowSystemInterface::handleLeaveEvent(leaveTarget);
             m_windowUnderPointer = nullptr;
             m_currentWindow = nullptr;
+            if (m_currentPenWindow == leaveTarget)
+                m_currentPenWindow = nullptr;
         }
         return true;
     }
