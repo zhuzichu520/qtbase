@@ -667,9 +667,9 @@ bool QWindowsPointerHandler::translatePenEvent(QWindow *window, HWND hwnd, QtWin
     switch (msg.message) {
     case WM_POINTERENTER: {
         QWindowSystemInterface::handleTabletEnterLeaveProximityEvent(window, msg.time, device.data(), true);
-        m_windowUnderPointer = window;
-        // The local coordinates may fall outside the window.
-        // Wait until the next update to send the enter event.
+        // The local coordinates may fall outside the window, so wait until the next update
+        // to send the enter event. Do not claim m_windowUnderPointer here: it is shared with
+        // the mouse handling and must only reflect a window we have actually entered.
         m_needsEnterOnPointerUpdate = true;
         break;
     }
@@ -679,24 +679,16 @@ bool QWindowsPointerHandler::translatePenEvent(QWindow *window, HWND hwnd, QtWin
         if (m_currentPenWindow == window) {
             QWindowSystemInterface::handleLeaveEvent(window);
             m_currentPenWindow = nullptr;
+            if (m_windowUnderPointer == window)
+                m_windowUnderPointer = nullptr;
         }
-
-        // WM_POINTERENTER set m_windowUnderPointer but no enter was delivered. Undo that unless
-        // the window is under the mouse as well (then it's legitimate)
-        if (m_windowUnderPointer == window && m_currentWindow != window)
-            m_windowUnderPointer = nullptr;
-
         QWindowSystemInterface::handleTabletEnterLeaveProximityEvent(window, msg.time, device.data(), false);
         break;
     case WM_POINTERDOWN:
     case WM_POINTERUP:
     case WM_POINTERUPDATE: {
-        QWindow *target = QGuiApplicationPrivate::tabletDevicePoint(uniqueId).target; // Pass to window that grabbed it.
-        if (!target && m_windowUnderPointer)
-            target = m_windowUnderPointer;
-        if (!target)
-            target = window;
-
+        // Deliver the pending enter before resolving the target, so that the fallback below
+        // sees the window the pen is over.
         if (m_needsEnterOnPointerUpdate) {
             m_needsEnterOnPointerUpdate = false;
             if (window != m_currentPenWindow) {
@@ -707,10 +699,18 @@ bool QWindowsPointerHandler::translatePenEvent(QWindow *window, HWND hwnd, QtWin
 
                 QWindowSystemInterface::handleEnterEvent(window, localPos, globalPos);
                 m_currentPenWindow = window;
-                if (QWindowsWindow *wumPlatformWindow = QWindowsWindow::windowsWindowOf(target))
-                    wumPlatformWindow->applyCursor();
+                m_windowUnderPointer = window;
+                if (QWindowsWindow *platformWindow = QWindowsWindow::windowsWindowOf(window))
+                    platformWindow->applyCursor();
             }
         }
+
+        QWindow *target = QGuiApplicationPrivate::tabletDevicePoint(uniqueId).target; // Pass to window that grabbed it.
+        if (!target && m_windowUnderPointer)
+            target = m_windowUnderPointer;
+        if (!target)
+            target = window;
+
         const auto *keyMapper = QWindowsContext::instance()->keyMapper();
         const Qt::KeyboardModifiers keyModifiers = keyMapper->queryKeyboardModifiers();
 
