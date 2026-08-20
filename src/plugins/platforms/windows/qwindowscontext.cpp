@@ -902,6 +902,10 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
             QWindowsCursor::enforceOverrideCursor();
             return true;
         }
+        if (platformWindow && LOWORD(lParam) == HTCLIENT) {
+            platformWindow->applyCursor();
+            return true;
+        }
         break;
     case QtWindows::UnknownEvent:
         return false;
