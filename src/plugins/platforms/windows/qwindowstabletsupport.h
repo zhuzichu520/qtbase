@@ -128,6 +128,7 @@ public:
 
     bool translateTabletProximityEvent(WPARAM wParam, LPARAM lParam);
     bool translateTabletPacketEvent();
+    bool isTabletInProximity() const { return m_state != PenUp; }
 
     static int absoluteRange() { return m_absoluteRange; }
     static void setAbsoluteRange(int a) { m_absoluteRange = a; }

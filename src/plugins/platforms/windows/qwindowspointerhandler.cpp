@@ -842,6 +842,17 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
             return false;
 #endif
             break;
+        default:
+#if QT_CONFIG(tabletevent)
+            // WinTab events bypass translatePointerEvent(), so m_pointerType does not
+            // identify the legacy mouse messages synthesized for them.
+            if (const auto *tabletSupport = QWindowsContext::instance()->tabletSupport();
+                tabletSupport && tabletSupport->isTabletInProximity()) {
+                qCDebug(lcQpaTablet) << "ignoring synth-mouse event for WinTab tablet event";
+                return false;
+            }
+#endif
+            break;
         }
     }
 
