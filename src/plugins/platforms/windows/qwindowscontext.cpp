@@ -1041,12 +1041,12 @@ bool QWindowsContext::windowsProc(HWND hwnd, UINT message,
             break;
         return sessionManagerInteractionBlocked() || d->m_pointerHandler.translatePointerEvent(platformWindow->window(), hwnd, et, msg, result);
     case QtWindows::EnterSizeMoveEvent:
-        platformWindow->setResizeMoveActive(true);
+        platformWindow->setFlag(QWindowsWindow::ResizeMoveActive);
         if (!IsZoomed(hwnd))
             platformWindow->updateRestoreGeometry();
         return true;
     case QtWindows::ExitSizeMoveEvent:
-        platformWindow->setResizeMoveActive(false);
+        platformWindow->clearFlag(QWindowsWindow::ResizeMoveActive);
         platformWindow->checkForScreenChanged();
         handleExitSizeMove(platformWindow->window());
         if (!IsZoomed(hwnd))

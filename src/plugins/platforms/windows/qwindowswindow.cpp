@@ -3282,24 +3282,6 @@ static inline DWORD edgesToWinOrientation(Qt::Edges edges)
     return 0xf000; // SC_SIZE
 }
 
-void QWindowsWindow::setResizeMoveActive(bool active)
-{
-    if (active)
-        setFlag(ResizeMoveActive);
-    else
-        clearFlag(ResizeMoveActive);
-
-    m_resizeMoveActive.storeRelease(active);
-}
-
-bool QWindowsWindow::allowsIndependentThreadedRendering() const
-{
-    // The render thread reads this while the window-system thread handles
-    // WM_ENTERSIZEMOVE and WM_EXITSIZEMOVE, so use the atomic mirror rather
-    // than reading m_flags directly.
-    return !m_resizeMoveActive.loadAcquire();
-}
-
 bool QWindowsWindow::startSystemResize(Qt::Edges edges)
 {
     if (Q_UNLIKELY(window()->flags().testFlag(Qt::MSWindowsFixedSizeDialogHint)))

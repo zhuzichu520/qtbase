@@ -270,7 +270,6 @@ public:
     inline bool hasMouseCapture() const { return GetCapture() == m_data.hwnd; }
 
     bool startSystemResize(Qt::Edges edges) override;
-    void setResizeMoveActive(bool active);
     bool startSystemMove() override;
 
     void setFrameStrutEventsEnabled(bool enabled) override;
@@ -363,7 +362,6 @@ public:
     bool isClientAreaExpanded() const { return m_data.flags.testFlag(Qt::ExpandedClientAreaHint); }
 
     void requestUpdate() override;
-    bool allowsIndependentThreadedRendering() const override;
 
 private:
     inline void show_sys() const;
@@ -413,7 +411,6 @@ private:
 
     qsizetype m_vsyncServiceCallbackId = 0;
     QAtomicInt m_vsyncUpdatePending;
-    QAtomicInt m_resizeMoveActive = 0;
 };
 
 #ifndef QT_NO_DEBUG_STREAM
