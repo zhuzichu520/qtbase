@@ -7,6 +7,7 @@
 #include "qwindowswindow.h"
 #include "qwindowsintegration.h"
 
+#include <QtCore/qatomic.h>
 #include <QtCore/qdebug.h>
 #include <QtCore/qsysinfo.h>
 #include <QtGui/qcolorspace.h>
@@ -1246,10 +1247,43 @@ void QWindowsGLContext::swapBuffers(QPlatformSurface *surface)
     if (QWindowsContext::verbose > 1)
         qCDebug(lcQpaGl) << __FUNCTION__ << surface;
 
-    if (const QOpenGLContextData *contextData = findByHWND(m_windowContexts, handleOf(surface)))
+    if (const QOpenGLContextData *contextData = findByHWND(m_windowContexts, handleOf(surface))) {
+        static const bool trace =
+                qEnvironmentVariable("QT_WINDOWS_GL_GEOMETRY_TRACE") != QLatin1String("0");
+        if (trace) {
+            // Bound diagnostic output across all render threads. Do not query GL
+            // state unless this surface's context and DC are actually current.
+            static QAtomicInteger<int> traceCount(0);
+            RECT client = {};
+            GLint viewport[4] = {};
+            const bool current = QOpenGLStaticContext::opengl32.wglGetCurrentContext()
+                            == contextData->renderingContext
+                    && QOpenGLStaticContext::opengl32.wglGetCurrentDC() == contextData->hdc;
+            const bool clientValid = GetClientRect(contextData->hwnd, &client);
+            if (current)
+                QOpenGLStaticContext::opengl32.glGetIntegerv(GL_VIEWPORT, viewport);
+            const auto *platformWindow = static_cast<QWindowsWindow *>(surface);
+            const QSize nativeSize(client.right - client.left, client.bottom - client.top);
+            const QSize qtSize = platformWindow->geometry().size()
+                    * platformWindow->devicePixelRatio();
+            const bool mismatch = clientValid && (nativeSize != qtSize
+                    || (current && nativeSize != QSize(viewport[2], viewport[3])));
+            if (traceCount.loadRelaxed() < 128
+                && (traceCount.loadRelaxed() < 4 || mismatch)
+                && traceCount.fetchAndAddRelaxed(1) < 128) {
+                qInfo() << "[HSJ_GL_GEOMETRY v2] swap hwnd=" << contextData->hwnd
+                        << "hdc=" << contextData->hdc << "current=" << current
+                        << "nativeValid=" << clientValid << "nativeSize=" << nativeSize
+                        << "qtSize=" << qtSize
+                        << "viewport=" << QRect(viewport[0], viewport[1], viewport[2], viewport[3])
+                        << "mismatch=" << mismatch
+                        << "exStyle=" << Qt::hex << GetWindowLongPtr(contextData->hwnd, GWL_EXSTYLE);
+            }
+        }
         QOpenGLStaticContext::opengl32.swapBuffers(contextData->hdc);
-    else
+    } else {
         qWarning("%s: Cannot find window %p", __FUNCTION__, handleOf(surface));
+    }
 }
 
 bool QWindowsGLContext::makeCurrent(QPlatformSurface *surface)
