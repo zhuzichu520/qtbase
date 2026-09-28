@@ -725,6 +725,17 @@ static QPoint calcPosition(const QWindow *w, const QWindowCreationContextPtr &co
     return scrGeo.contains(newPosNoMargin) ? newPosNoMargin : newPos;
 }
 
+// Keep an overlapped frame for maximizable OpenGL windows so filling the monitor
+// does not look like a borderless popup to the presentation path. NCCALCSIZE
+// removes its visible decoration; Qt's public frameless contract stays intact.
+static bool usesOpenGLFramelessFrame(const QWindow *w, Qt::WindowFlags flags)
+{
+    return w->isTopLevel() && w->surfaceType() == QSurface::OpenGLSurface
+        && (flags & Qt::WindowType_Mask) == Qt::Window
+        && flags.testFlag(Qt::FramelessWindowHint)
+        && flags.testFlag(Qt::WindowMaximizeButtonHint);
+}
+
 void WindowCreationData::fromWindow(const QWindow *w, const Qt::WindowFlags flagsIn,
                                     unsigned creationFlags)
 {
@@ -841,6 +852,11 @@ void WindowCreationData::fromWindow(const QWindow *w, const Qt::WindowFlags flag
                 exStyle |= WS_EX_CONTEXTHELP;
         } else {
              exStyle |= WS_EX_TOOLWINDOW;
+        }
+
+        if (!embedded && usesOpenGLFramelessFrame(w, flags)) {
+            style &= ~WS_POPUP;
+            style |= WS_CAPTION | WS_THICKFRAME;
         }
 
         // make mouse events fall through this window
@@ -1167,6 +1183,22 @@ QMargins QWindowsGeometryHint::frame(const QWindow *w, const QRect &geometry,
 
 bool QWindowsGeometryHint::handleCalculateSize(const QWindow *window, const QMargins &customMargins, const MSG &msg, LRESULT *result)
 {
+    if (usesOpenGLFramelessFrame(window, window->flags())) {
+        // The first RECT has the same layout for both forms of WM_NCCALCSIZE.
+        auto *clientRect = reinterpret_cast<RECT *>(msg.lParam);
+        if (IsZoomed(msg.hwnd) && (GetWindowLongPtr(msg.hwnd, GWL_STYLE) & WS_THICKFRAME)) {
+            MONITORINFO monitorInfo = {};
+            monitorInfo.cbSize = sizeof(monitorInfo);
+            if (GetMonitorInfoW(MonitorFromWindow(msg.hwnd, MONITOR_DEFAULTTONEAREST),
+                                &monitorInfo)) {
+                // Native maximization puts the resize frame outside the work area.
+                // Keep every client pixel inside it, without reserving a taskbar gap.
+                *clientRect = monitorInfo.rcWork;
+            }
+        }
+        *result = 0;
+        return true;
+    }
     // Prevent adding any border for frameless window
     if (msg.wParam && window->flags() & Qt::FramelessWindowHint) {
         *result = 0;
@@ -2312,7 +2344,7 @@ void QWindowsWindow::handleResized(int wParam, LPARAM lParam)
     /* Prevents borderless windows from covering the taskbar when maximized. */
     if ((m_data.flags.testFlag(Qt::FramelessWindowHint)
          || (m_data.flags.testFlag(Qt::CustomizeWindowHint) && !m_data.flags.testFlag(Qt::WindowTitleHint)))
-        && IsZoomed(m_data.hwnd)) {
+        && !usesOpenGLFramelessFrame(window(), m_data.flags) && IsZoomed(m_data.hwnd)) {
         const int resizedWidth = LOWORD(lParam);
         const int resizedHeight = HIWORD(lParam);
 
@@ -2353,13 +2385,31 @@ void QWindowsWindow::handleResized(int wParam, LPARAM lParam)
     case SIZE_MAXIMIZED:
         handleGeometryChange();
         updateRestoreGeometry();    // we might be in ResizeMoveActive mode but changed the screen
-        if (!testFlag(WithinSetStyle) && !testFlag(WithinSetGeometry))
+        if (!m_inSetWindowState && !testFlag(WithinSetStyle) && !testFlag(WithinSetGeometry))
             handleWindowStateChange(Qt::WindowMaximized | (isFullScreen_sys() ? Qt::WindowFullScreen
                                                                               : Qt::WindowNoState));
         break;
     case SIZE_RESTORED:
         handleGeometryChange();
-        if (!testFlag(WithinSetStyle) && !testFlag(WithinSetGeometry)) {
+        if (!m_inSetWindowState && !testFlag(WithinSetStyle) && !testFlag(WithinSetGeometry)) {
+            // A frameless maximize uses MoveWindow, so Windows can report SIZE_RESTORED.
+            // Retain the known maximized state while the window still fills the work area.
+            if (m_data.flags.testFlag(Qt::FramelessWindowHint)
+                && !usesOpenGLFramelessFrame(window(), m_data.flags)
+                && m_windowState.testFlag(Qt::WindowMaximized)
+                && !m_windowState.testFlag(Qt::WindowFullScreen)) {
+                MONITORINFO monitorInfo{};
+                monitorInfo.cbSize = sizeof(monitorInfo);
+                const auto monitor = MonitorFromWindow(m_data.hwnd, MONITOR_DEFAULTTONEAREST);
+                if (GetMonitorInfoW(monitor, &monitorInfo)
+                    && geometry_sys() == QRect(QPoint(monitorInfo.rcWork.left, monitorInfo.rcWork.top),
+                                               QSize(monitorInfo.rcWork.right - monitorInfo.rcWork.left,
+                                                     monitorInfo.rcWork.bottom - monitorInfo.rcWork.top))) {
+                    if (m_windowState.testFlag(Qt::WindowMinimized))
+                        handleWindowStateChange(Qt::WindowMaximized);
+                    break;
+                }
+            }
             if (isFullScreen_sys())
                 handleWindowStateChange(
                     Qt::WindowFullScreen
@@ -2729,6 +2779,9 @@ void QWindowsWindow::updateRestoreGeometry()
 void QWindowsWindow::setWindowState(Qt::WindowStates state)
 {
     if (m_data.hwnd) {
+        // QWindow publishes the requested state after this call returns. Do not let
+        // synchronous resize messages replace it with a geometry-derived state.
+        QScopedValueRollback stateChangeGuard(m_inSetWindowState, true);
         setWindowState_sys(state);
         m_windowState = state;
     }
@@ -2738,6 +2791,11 @@ bool QWindowsWindow::isFullScreen_sys() const
 {
     const QWindow *w = window();
     if (!w->isTopLevel())
+        return false;
+    // An auto-hide taskbar makes the work area equal to the monitor. That does
+    // not make a maximized window fullscreen. Explicit fullscreen saves its style.
+    if (!m_savedStyle && (IsZoomed(m_data.hwnd) || testFlag(WithinMaximize)
+                         || m_windowState.testFlag(Qt::WindowMaximized)))
         return false;
     QRect geometry = geometry_sys();
     if (testFlag(HasBorderInFullScreen))
@@ -2777,9 +2835,15 @@ void QWindowsWindow::setWindowState_sys(Qt::WindowStates newState)
             if (!m_savedStyle) {
                 m_savedStyle = style();
                 if ((oldState & Qt::WindowMinimized) || (oldState & Qt::WindowMaximized)) {
-                    const QRect nf = normalFrameGeometry(m_data.hwnd);
-                    if (nf.isValid())
-                        m_savedFrameGeometry = nf;
+                    // MoveWindow-based maximization replaces the native normal rect.
+                    // Keep the normal geometry already saved by the frameless path.
+                    if (!m_data.flags.testFlag(Qt::FramelessWindowHint)
+                        || usesOpenGLFramelessFrame(window(), m_data.flags)
+                        || !m_savedFrameGeometry.isValid()) {
+                        const QRect nf = normalFrameGeometry(m_data.hwnd);
+                        if (nf.isValid())
+                            m_savedFrameGeometry = nf;
+                    }
                 } else {
                     m_savedFrameGeometry = frameGeometry_sys();
                 }
@@ -2858,17 +2922,28 @@ void QWindowsWindow::setWindowState_sys(Qt::WindowStates newState)
                 }
             }
             m_savedStyle = 0;
-            m_savedFrameGeometry = QRect();
+            if (!m_data.flags.testFlag(Qt::FramelessWindowHint)
+                || usesOpenGLFramelessFrame(window(), m_data.flags)
+                || !newState.testFlag(Qt::WindowMaximized))
+                m_savedFrameGeometry = QRect();
         }
     } else if ((oldState & Qt::WindowMaximized) != (newState & Qt::WindowMaximized)) {
         if (visible && !(newState & Qt::WindowMinimized)) {
             setFlag(WithinMaximize);
             if (newState & Qt::WindowFullScreen)
                 setFlag(MaximizeToFullScreen);
-            if (m_data.flags & Qt::FramelessWindowHint) {
+            if (m_data.flags.testFlag(Qt::FramelessWindowHint)
+                && !usesOpenGLFramelessFrame(window(), m_data.flags)) {
                 if (newState == Qt::WindowNoState) {
-                    const QRect &rect = m_savedFrameGeometry;
-                    MoveWindow(m_data.hwnd, rect.x(), rect.y(), rect.width(), rect.height(), true);
+                    const QRect rect = m_savedFrameGeometry.isValid()
+                        ? m_savedFrameGeometry : normalFrameGeometry(m_data.hwnd);
+                    // Showing a hidden/minimized maximized window uses SW_MAXIMIZE.
+                    // Clear the native maximized flag before restoring its geometry.
+                    if (IsZoomed(m_data.hwnd))
+                        ShowWindow(m_data.hwnd, SW_SHOWNOACTIVATE);
+                    if (rect.isValid())
+                        MoveWindow(m_data.hwnd, rect.x(), rect.y(), rect.width(), rect.height(), true);
+                    m_savedFrameGeometry = QRect();
                 } else {
                     HMONITOR monitor = MonitorFromWindow(m_data.hwnd, MONITOR_DEFAULTTONEAREST);
                     MONITORINFO monitorInfo = {};
