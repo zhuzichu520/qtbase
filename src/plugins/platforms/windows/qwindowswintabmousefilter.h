@@ -28,6 +28,13 @@ public:
 
     void leaveProximity() { m_tabletButtons = Qt::NoButton; }
 
+    bool suppressMouseMove(bool injected) const
+    {
+        // The duplicate stream must not acquire a Qt Quick grab between its
+        // suppressed press and release. Tablet movement is delivered separately.
+        return injected && m_suppressedButtons != Qt::NoButton;
+    }
+
     bool suppressMouseEvent(quint32 time, const QPoint &position, Qt::MouseButton button,
                             bool pressed, bool injected, quint64 now)
     {
