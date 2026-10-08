@@ -7,7 +7,9 @@
 
 #include <QtCore/qt_windows.h>
 #include "qwindowsopenglcontext.h"
+#include "qwindowsglgeometrytrace.h"
 
+#include <QtCore/qhash.h>
 #include <QtGui/qopenglcontext.h>
 
 #include <vector>
@@ -194,6 +196,19 @@ private:
 
     inline void releaseDCs();
     bool updateObtainedParams(HDC hdc, int *obtainedSwapInterval = nullptr);
+    void traceGeometry(const char *stage, const QOpenGLContextData &data, bool success);
+
+    struct GeometryTraceState
+    {
+        QWindowsGLGeometrySnapshot snapshot;
+        quint32 sequence = 0;
+        int framesLeft = 0;
+        int records = 0;
+        bool driverLogged = false;
+    };
+    // Retain the budget across doneCurrent()/releaseDCs(), which can run every frame.
+    // Accessed only by the thread owning this OpenGL context, never by the GUI thread.
+    QHash<HWND, GeometryTraceState> m_geometryTrace;
 
     QOpenGLStaticContext *m_staticContext = nullptr;
     QSurfaceFormat m_obtainedFormat;

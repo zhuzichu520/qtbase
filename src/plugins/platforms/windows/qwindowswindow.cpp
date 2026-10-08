@@ -6,6 +6,7 @@
 #include <QtGui/qstylehints.h>
 
 #include "qwindowswindow.h"
+#include "qwindowsglgeometrytrace.h"
 #include "qwindowscontext.h"
 #include "qwindowstheme.h"
 #if QT_CONFIG(draganddrop)
@@ -2402,13 +2403,6 @@ void QWindowsWindow::checkForScreenChanged(ScreenChangeMode mode, const RECT *su
     QWindowSystemInterface::handleWindowScreenChanged<QWindowSystemInterface::SynchronousDelivery>(window(), newScreen->screen());
 }
 
-static bool glGeometryTraceEnabled()
-{
-    static const bool enabled =
-            qEnvironmentVariable("QT_WINDOWS_GL_GEOMETRY_TRACE") != QLatin1String("0");
-    return enabled;
-}
-
 static bool nativeClientGeometry(HWND hwnd, QRect *geometry)
 {
     RECT rect = {};
@@ -2430,23 +2424,26 @@ static void traceGlWindowGeometry(const char *stage, const QWindowsWindow *platf
         || platformWindow->window()->surfaceType() != QSurface::OpenGLSurface) {
         return;
     }
-    QRect nativeClient;
+    const DWORD savedError = GetLastError();
     const HWND hwnd = platformWindow->handle();
-    const bool valid = nativeClientGeometry(hwnd, &nativeClient);
-    qInfo() << "[HSJ_GL_GEOMETRY v2]" << stage << "hwnd=" << hwnd
-            << "nativeValid=" << valid << "nativeClientScreen=" << nativeClient
+    qInfo() << "[HSJ_GL_GEOMETRY v3]" << stage
+            << "tick=" << GetTickCount64() << "tid=" << GetCurrentThreadId()
+            << "hwnd=" << hwnd << "window=" << platformWindow->window()
+            << QWindowsGLGeometrySnapshot::capture(hwnd)
             << "qtNative=" << platformWindow->geometry()
+            << "qtLogical=" << platformWindow->window()->geometry()
+            << "qtState=" << platformWindow->window()->windowStates()
             << "margins=" << platformWindow->fullFrameMargins()
             << "dpr=" << platformWindow->window()->devicePixelRatio()
-            << "dpi=" << GetDpiForWindow(hwnd)
-            << "style=" << Qt::hex << GetWindowLongPtr(hwnd, GWL_STYLE)
-            << "exStyle=" << GetWindowLongPtr(hwnd, GWL_EXSTYLE) << Qt::dec
+            << "alphaBuffer=" << platformWindow->window()->format().alphaBufferSize()
             << "opacity=" << platformWindow->window()->opacity();
+    SetLastError(savedError);
 }
 
 void QWindowsWindow::handleGeometryChange()
 {
     const QRect previousGeometry = m_data.geometry;
+    traceGlWindowGeometry("geometry-before", this);
     updateFullFrameMargins();
     m_data.geometry = geometry_sys();
     traceGlWindowGeometry("geometry", this);
@@ -3101,7 +3098,7 @@ void QWindowsWindow::calculateFullFrameMargins()
                                          nativeFrame.right - nativeClient.x() - nativeClient.width(),
                                          nativeFrame.bottom - nativeClient.y() - nativeClient.height());
             if (glGeometryTraceEnabled() && nativeMargins != m_data.fullFrameMargins) {
-                qInfo() << "[HSJ_GL_GEOMETRY v2] margins hwnd=" << handle()
+                qInfo() << "[HSJ_GL_GEOMETRY v3] margins hwnd=" << handle()
                         << "old=" << m_data.fullFrameMargins << "native=" << nativeMargins;
             }
             setFullFrameMargins(nativeMargins);

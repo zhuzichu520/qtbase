@@ -4,6 +4,7 @@
 // Qt-Security score:significant reason:default
 
 #include "qwindowscontext.h"
+#include "qwindowsglgeometrytrace.h"
 #include "qwindowsintegration.h"
 #include "qwindowswindow.h"
 #include "qwindowskeymapper.h"
@@ -1349,8 +1350,64 @@ static inline bool isTopLevel(HWND hwnd)
 
 */
 
+// Log around native filters too: FluFrameless handles WM_NCCALCSIZE before QPA.
+static void traceGlNativeMessage(const char *stage, HWND hwnd, UINT message,
+                                 WPARAM wParam, LPARAM lParam)
+{
+    if (!glGeometryTraceEnabled())
+        return;
+    static QHash<HWND, int> records; // Window procedure thread only.
+    if (message == WM_NCDESTROY) {
+        records.remove(hwnd);
+        return;
+    }
+    const bool click = message == WM_LBUTTONDOWN || message == WM_LBUTTONUP
+        || message == WM_LBUTTONDBLCLK;
+    if (message != WM_NCCALCSIZE && message != WM_WINDOWPOSCHANGED
+        && message != WM_SIZE && message != WM_DPICHANGED && !click) {
+        return;
+    }
+    // Look up afresh: dispatch can destroy or recreate the platform window.
+    const auto *window = QWindowsContext::instance()->findPlatformWindow(hwnd);
+    if (!window || window->window()->surfaceType() != QSurface::OpenGLSurface)
+        return;
+    int &count = records[hwnd];
+    if (count >= 1000)
+        return;
+    const DWORD savedError = GetLastError();
+    const auto restoreError = qScopeGuard([savedError] { SetLastError(savedError); });
+    QRect ncRect;
+    if (message == WM_NCCALCSIZE) {
+        const RECT &rect = wParam ? reinterpret_cast<NCCALCSIZE_PARAMS *>(lParam)->rgrc[0]
+                                  : *reinterpret_cast<RECT *>(lParam);
+        ncRect = QRect(rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+    }
+    QPoint inputLocal, inputScreen, qtNativeLocal;
+    bool inputMapped = false;
+    if (click) {
+        inputLocal = QPoint(GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam));
+        POINT point{inputLocal.x(), inputLocal.y()};
+        inputMapped = ClientToScreen(hwnd, &point);
+        inputScreen = QPoint(point.x, point.y);
+        qtNativeLocal = window->mapFromGlobal(inputScreen);
+    }
+    qInfo() << "[HSJ_GL_GEOMETRY v3] native-" << stage
+            << "tick=" << GetTickCount64() << "tid=" << GetCurrentThreadId()
+            << "hwnd=" << hwnd << "message=" << Qt::hex << message
+            << "wParam=" << quintptr(wParam) << Qt::dec
+            << QWindowsGLGeometrySnapshot::capture(hwnd)
+            << "qtNative=" << window->geometry()
+            << "qtState=" << window->window()->windowStates()
+            << "ncRect=" << ncRect << "inputMapped=" << inputMapped
+            << "inputLocal=" << inputLocal << "inputScreen=" << inputScreen
+            << "qtNativeLocal=" << qtNativeLocal;
+    if (++count == 1000)
+        qInfo() << "[HSJ_GL_GEOMETRY v3] native-budget-exhausted hwnd=" << hwnd;
+}
+
 LRESULT QT_WIN_CALLBACK qWindowsWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+    traceGlNativeMessage("before", hwnd, message, wParam, lParam);
     LRESULT result;
     const QtWindows::WindowsEventType et = windowsEventType(message, wParam, lParam);
     QWindowsWindow *platformWindow = nullptr;
@@ -1366,6 +1423,7 @@ LRESULT QT_WIN_CALLBACK qWindowsWndProc(HWND hwnd, UINT message, WPARAM wParam, 
     }
     if (!handled)
         result = DefWindowProc(hwnd, message, wParam, lParam);
+    traceGlNativeMessage("after", hwnd, message, wParam, lParam);
 
     // Capture WM_NCCALCSIZE on top level windows and obtain the window margins by
     // subtracting the rectangles before and after processing. This will correctly
