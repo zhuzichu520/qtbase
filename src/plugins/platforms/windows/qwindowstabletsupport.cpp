@@ -476,6 +476,7 @@ bool QWindowsTabletSupport::translateTabletProximityEvent(WPARAM /* wParam */, L
             return false;
         qCDebug(lcQpaTablet) << "leave proximity for device #" << m_currentDevice.data();
         m_state = PenUp;
+        m_mouseFilter.leaveProximity();
         leaveProximity(totalPacks > 0 ? proximityBuffer[0].pkTime : 0u);
         return true;
     }
@@ -695,6 +696,7 @@ bool QWindowsTabletSupport::translateTabletPacketEvent()
         }
 
         m_eventTime = packet.pkTime;
+        m_mouseFilter.recordTabletEvent(packet.pkTime, globalPos, buttons, GetTickCount64());
         QWindowSystemInterface::handleTabletEvent(target, packet.pkTime,
                                                   m_currentDevice.data(),
                                                   QPointF(localPos), globalPosF,

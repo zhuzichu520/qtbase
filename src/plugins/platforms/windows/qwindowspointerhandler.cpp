@@ -823,6 +823,23 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
     Qt::MouseEventSource source = Qt::MouseEventNotSynthesized;
     const QPointingDevice *device = primaryMouse();
 
+    const MouseEvent mouseEvent = eventFromMsg(msg);
+#if QT_CONFIG(tabletevent)
+    if (mouseEvent.button != Qt::NoButton) {
+        if (auto *tablet = QWindowsContext::instance()->tabletSupport()) {
+            INPUT_MESSAGE_SOURCE inputSource{};
+            const bool injected = GetCurrentInputMessageSource(&inputSource)
+                && inputSource.deviceType == IMDT_MOUSE && inputSource.originId == IMO_INJECTED;
+            const bool pressed = mouseEvent.type == QEvent::MouseButtonPress
+                || mouseEvent.type == QEvent::NonClientAreaMouseButtonPress;
+            if (tablet->mouseFilter().suppressMouseEvent(msg.time, globalPos, mouseEvent.button,
+                                                        pressed, injected, GetTickCount64())) {
+                return false;
+            }
+        }
+    }
+#endif
+
     // Following the logic of the old mouse handler, only events synthesized
     // for touch screen are marked as such. On some systems, using the bit 7 of
     // the extra msg info for checking if synthesized for touch does not work,
@@ -856,7 +873,6 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
         }
     }
 
-    const MouseEvent mouseEvent = eventFromMsg(msg);
     Qt::MouseButtons mouseButtons;
 
     if (mouseEvent.type >= QEvent::NonClientAreaMouseMove && mouseEvent.type <= QEvent::NonClientAreaMouseButtonDblClick)
