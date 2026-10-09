@@ -6,6 +6,7 @@
 #define QWINDOWSPOINTERHANDLER_H
 
 #include "qtwindowsglobal.h"
+#include "qwindowspenmousefilter.h"
 #include <QtCore/qt_windows.h>
 
 #include <QtCore/qpointer.h>
@@ -72,6 +73,7 @@ private:
     QEvent::Type m_lastEventType = QEvent::None;
     Qt::MouseButton m_lastEventButton = Qt::NoButton;
     DWORD m_pointerType = 0;
+    QWindowsPenMouseFilter m_penMouseFilter;
     static qint64 m_nextInputDeviceId; // workaround until we know how to get system device IDs
 };
 

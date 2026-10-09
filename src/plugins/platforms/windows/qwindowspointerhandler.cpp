@@ -824,6 +824,12 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
     const QPointingDevice *device = primaryMouse();
 
     const MouseEvent mouseEvent = eventFromMsg(msg);
+    const bool mousePress = mouseEvent.type == QEvent::MouseButtonPress
+        || mouseEvent.type == QEvent::NonClientAreaMouseButtonPress;
+    const auto suppressPenMouseEvent = [&] {
+        m_penMouseFilter.recordSuppressedButton(mouseEvent.button, mousePress);
+        return false;
+    };
 #if QT_CONFIG(tabletevent)
     const bool mouseMove = mouseEvent.type == QEvent::MouseMove
         || mouseEvent.type == QEvent::NonClientAreaMouseMove;
@@ -837,7 +843,7 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
             if ((mouseMove && tablet->mouseFilter().suppressMouseMove(injected))
                 || tablet->mouseFilter().suppressMouseEvent(msg.time, globalPos, mouseEvent.button,
                                                         pressed, injected, GetTickCount64())) {
-                return false;
+                return suppressPenMouseEvent();
             }
         }
     }
@@ -859,7 +865,7 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
         case QT_PT_PEN:
 #if QT_CONFIG(tabletevent)
             qCDebug(lcQpaTablet) << "ignoring synth-mouse event for tablet event from" << device;
-            return false;
+            return suppressPenMouseEvent();
 #endif
             break;
         default:
@@ -869,7 +875,7 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
             if (const auto *tabletSupport = QWindowsContext::instance()->tabletSupport();
                 tabletSupport && tabletSupport->isTabletInProximity()) {
                 qCDebug(lcQpaTablet) << "ignoring synth-mouse event for WinTab tablet event";
-                return false;
+                return suppressPenMouseEvent();
             }
 #endif
             break;
@@ -882,6 +888,16 @@ bool QWindowsPointerHandler::translateMouseEvent(QWindow *window,
         mouseButtons = queryMouseButtons();
     else
         mouseButtons = mouseButtonsFromKeyState(msg.wParam);
+
+    if (mousePress)
+        m_penMouseFilter.recordDeliveredPress(mouseEvent.button);
+    if (mouseEvent.type == QEvent::MouseMove
+            || mouseEvent.type == QEvent::NonClientAreaMouseMove) {
+        const auto filteredButtons = m_penMouseFilter.filteredButtons(mouseButtons);
+        if (filteredButtons != mouseButtons && filteredButtons == Qt::NoButton)
+            return false;
+        mouseButtons = filteredButtons;
+    }
 
     // When the left/right mouse buttons are pressed over the window title bar
     // WM_NCLBUTTONDOWN/WM_NCRBUTTONDOWN messages are received. But no UP
